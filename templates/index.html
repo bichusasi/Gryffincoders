@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AeroCast - AQ Forecast & TEMPO Validation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        
+        :root {
+            --aqi-color: #22c55e; /* Default Good Green */
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* Light background (slate-50) */
+            color: #1f2937; /* Dark text (gray-800) */
+            overflow-x: hidden; /* Prevent horizontal scroll due to background effect */
+        }
+        
+        /* New: Wind Flowing Background Effect (ENHANCED for Light Mode) */
+        .wind-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 200%; 
+            height: 100%;
+            z-index: -1;
+            /* LIGHT GRADIENT: Subtle light gray/blue effect */
+            background: linear-gradient(90deg, #f8fafc 0%, #e2e8f0 50%, #f8fafc 100%);
+            background-size: 50% 100%; 
+            animation: flow 30s linear infinite;
+            opacity: 1; /* Use full opacity with subtle colors for visibility */
+        }
+
+        @keyframes flow {
+            from {
+                transform: translate3d(0, 0, 0);
+            }
+            to {
+                transform: translate3d(-50%, 0, 0);
+            }
+        }
+        
+        /* Custom meter styling for the AQI gauge */
+        .aqi-meter-needle {
+            transform-origin: 50% 100%;
+            transition: transform 1s ease-in-out;
+        }
+
+        /* Custom bar chart styles for the 7-day data */
+        .chart-bar {
+            transition: height 0.5s ease-out;
+            border-radius: 4px 4px 0 0;
+            cursor: pointer;
+        }
+
+        /* Gradient background for the validation box (LIGHT MODE) */
+        .validation-card {
+            background: linear-gradient(145deg, #ffffff, #f1f5f9);
+            border: 1px solid #cbd5e1; /* Light gray border */
+        }
+        
+        /* Ensure the map container has a background and height */
+        #map-container {
+            height: 400px; 
+            width: 100%;
+            border-radius: 0.75rem; 
+            z-index: 10;
+        }
+
+        /* AQI meter text positioning */
+        #aqi-meter-svg {
+            transform: none !important; 
+        }
+        #aqi-meter-svg .meter-text-overlay {
+            transform: none !important; 
+            top: 70%; 
+            /* Text should be dark for contrast against bright meter colors */
+            color: #1f2937; 
+        }
+
+        /* --- New AQI Bar Indicator Styles --- */
+        .aqi-container-bar {
+            width: 100%;
+            margin-top: 24px; /* Tailwind mt-6 */
+            text-align: left;
+            color: #1f2937; /* Dark text */
+        }
+
+        .values-bar {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .bar-bg {
+            position: relative;
+            height: 20px;
+            border-radius: 10px;
+            overflow: visible; /* Important for marker to stick out */
+            /* Standard EPA AQI color gradient */
+            background: linear-gradient(
+                to right,
+                #00cc44 0%, /* Good */
+                #99cc00 20%, /* Moderate */
+                #ffcc00 40%, /* Unhealthy SG */
+                #ff6600 60%, /* Unhealthy */
+                #cc0000 80%, /* Very Unhealthy */
+                #990000 100% /* Hazardous (simplified) */
+            );
+        }
+
+        .marker-bar {
+            position: absolute;
+            top: -8px;
+            width: 10px;
+            height: 36px;
+            background: #1f2937; /* Dark marker for light background */
+            border: 2px solid #ffffff; /* White border for visibility */
+            border-radius: 3px;
+            transition: left 1s ease;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+            z-index: 20;
+        }
+
+        .labels-bar {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-top: 8px;
+            font-weight: 400;
+            color: #4b5563; /* Gray text */
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-blue': '#3b82f6',
+                        'card-dark': '#ffffff', /* Redefine to white for light mode */
+                        'card-gray': '#f8fafc', /* Subtle contrast background */
+                    },
+                }
+            }
+        }
+    </script>
+</head>
+<body>
+
+<div class="wind-bg"></div>
+
+<div id="splash-screen" class="fixed inset-0 flex flex-col items-center justify-center bg-white z-50 transition-opacity duration-1000 ease-in-out">
+    <div class="text-gray-900 text-6xl font-extrabold flex items-center">
+        <svg class="w-20 h-20 mr-4 text-primary-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.7 2M12 9v2m0 4v2m-4-2h8m-8-2h8"></path></svg>
+        <span class="animate-pulse">AeroCast</span>
+    </div>
+    <p class="mt-4 text-xl text-gray-600">TEMPO & Ground Data Fusion for Forecasts</p>
+</div>
+
+<div id="main-app" class="hidden min-h-screen p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-primary-blue">AeroCast</h1>
+            <p class="text-xl text-gray-600 mt-1">Air Quality Forecasting Dashboard</p>
+        </header>
+
+        <div class="bg-white p-4 md:p-6 rounded-xl shadow-lg mb-8 border border-gray-200">
+            <h2 class="text-2xl font-semibold mb-4">Location Selection & Forecast Context</h2>
+            
+            <div class="flex flex-col md:flex-row space-y-3 md:space-y-0 md:space-x-3 mb-4">
+                <input type="text" id="location-search" placeholder="Search for a city or location..." class="flex-grow p-3 rounded-lg bg-white border border-gray-300 focus:ring-primary-blue focus:border-primary-blue text-gray-900" value="Kottayam, Kerala, India">
+                <button onclick="searchLocation()" class="bg-primary-blue hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg transition duration-200 shadow-md">
+                    Get Forecast
+                </button>
+                <button onclick="getCurrentLocationAndForecast()" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-3 px-6 rounded-lg transition duration-200 shadow-md flex items-center justify-center">
+                    <svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    Current Location
+                </button>
+            </div>
+            <p id="map-interaction-message" class="text-sm text-gray-500 mb-3 italic">
+                Tip: Click anywhere on the map below to select a new forecast area.
+            </p>
+
+            <div id="map-container" class="bg-gray-200 rounded-lg border border-gray-300 mb-4">
+                </div>
+
+            <div class="text-sm text-gray-600">
+                <p><strong>Selected Model Target:</strong> <span id="api-indicator" class="text-green-600">PM$_{2.5}$ (Forecasting Model Output)</span></p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+            
+            <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg flex flex-col items-center border border-gray-200">
+                <h2 class="text-2xl font-semibold mb-4 text-center">Predicted AQI Level</h2>
+                
+                <div class="relative w-full max-w-xs aspect-square">
+                    <svg viewBox="0 0 200 100" class="w-full h-full" id="aqi-meter-svg">
+                        <path d="M 78 85 A 22 22 0 0 1 122 85" fill="none" stroke="#22c55e" stroke-width="20" />
+                        <path d="M 61 89 A 39 39 0 0 1 139 89" fill="none" stroke="#facc15" stroke-width="20" /> 
+                        <path d="M 44 93 A 56 56 0 0 1 156 93" fill="none" stroke="#fb923c" stroke-width="20" /> 
+                        <path d="M 27 96 A 73 73 0 0 1 173 96" fill="none" stroke="#f97316" stroke-width="20" /> 
+                        <path d="M 10 100 A 90 90 0 0 1 190 100" fill="none" stroke="#dc2626" stroke-width="20" /> 
+                        
+                        <line id="aqi-meter-needle" x1="100" y1="100" x2="100" y2="20" stroke="#1f2937" stroke-width="3" class="aqi-meter-needle" style="transform: rotate(-90deg);"/>
+                        <circle cx="100" cy="100" r="5" fill="#1f2937"/>
+                    </svg>
+
+                    <div class="absolute inset-0 flex flex-col items-center justify-center pt-0" id="meter-text-overlay">
+                        <p class="text-5xl font-extrabold -mt-12 text-gray-900" id="aqi-value">--</p>
+                        <p class="text-base font-medium text-center px-4" id="aqi-status">Loading...</p>
+                        <p class="text-xs font-light text-gray-500 mt-1">Predicted PM$_{2.5}$ $\mu g/m^3$</p>
+                    </div>
+                </div>
+
+                <p class="mt-4 text-sm text-gray-600">Prediction based on model features at <span id="aqi-time">--:--</span></p>
+
+                <div class="aqi-container-bar">
+                    <h4 class="text-lg font-bold mb-3 text-gray-800">Air Quality Index (AQI) Bar</h4>
+                    <div class="values-bar">
+                        <div id="pm10">PM10 : -- µg/m³</div>
+                        <div id="pm25_bar">PM2.5 : -- µg/m³</div>
+                    </div>
+
+                    <div class="bar-bg" id="aqiBar">
+                        <div class="marker-bar" id="marker"></div>
+                    </div>
+
+                    <div class="labels-bar">
+                        <span class="w-1/5 text-left">Good</span>
+                        <span class="w-1/5 text-center">Moderate</span>
+                        <span class="w-1/5 text-center">Unhealthy SG</span>
+                        <span class="w-1/5 text-center">Unhealthy</span>
+                        <span class="w-1/5 text-right">Hazardous</span>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="lg:col-span-2 space-y-8">
+                
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h3 class="text-xl font-semibold mb-4 border-b border-gray-200 pb-2 flex items-center">
+                        Model Features & Forecast Output
+                        <svg class="w-5 h-5 ml-2 text-primary-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    </h3>
+                    <div id="forecast-details" class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+                        </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="validation-card p-6 rounded-xl shadow-xl">
+                        <h3 class="text-xl font-semibold mb-4 border-b border-gray-300 pb-2 text-green-700 flex items-center">
+                            Satellite-Ground Validation
+                            <svg class="w-5 h-5 ml-2 text-green-700" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm-3 9a1 1 0 112 0v2a1 1 0 11-2 0v-2zm4-4a1 1 0 112 0v6a1 1 0 11-2 0V7z"></path></svg>
+                        </h3>
+                        <p class="text-sm text-gray-700 mb-3">Comparing TEMPO's NO$_{2}$ input with the nearest OpenAQ PM$_{2.5}$ ground data for model transparency.</p>
+                        <div id="validation-details" class="space-y-3 text-xs">
+                             </div>
+                    </div>
+
+                    <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                        <h3 class="text-xl font-semibold mb-4 border-b border-gray-200 pb-2 flex items-center">
+                            Health & Exposure Advice
+                            <svg class="w-5 h-5 ml-2 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.103a4 4 0 010 5.656L10 17.656l-5.618-5.619a4 4 0 015.656-5.656l1.405 1.404"></path></svg>
+                        </h3>
+                        <ul id="health-advice" class="text-sm space-y-3 text-gray-700">
+                            </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="bg-red-100 border border-red-400 p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold text-red-700 mb-4 flex items-center">
+                <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                Proactive Health Alert System
+            </h2>
+            <p class="text-red-700 mb-4">Set your own PM$_{2.5}$ threshold to receive a **Proactive Alert** when the forecast exceeds it.</p>
+            <div class="flex space-x-4">
+                <input type="number" id="alert-threshold" value="70" placeholder="PM2.5 Threshold (µg/m³)" class="p-3 rounded-lg bg-white border border-gray-300 focus:ring-red-500 focus:border-red-500 text-gray-900 w-24 text-center">
+                <button onclick="sendAlert()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg transition duration-200 shadow-md flex-grow">
+                    Set Alert Threshold
+                </button>
+            </div>
+            <div id="alert-message" class="mt-3 text-sm text-green-700 hidden"></div>
+        </div>
+
+        <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+            <h2 class="text-2xl font-semibold mb-4">7-Day PM$_{2.5}$ Forecast Trend ($\mu g/m^3$)</h2>
+            <div class="h-64 flex items-end justify-around p-2" id="aqi-chart-container">
+                </div>
+            <div class="flex justify-around text-xs mt-2" id="chart-labels">
+                </div>
+        </div>
+
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+    let map;
+    let marker;
+    let circle;
+    // UPDATED DEFAULT_COORDS to a Kerala location (Kottayam) for better context
+    const DEFAULT_COORDS = [9.5916, 76.5222]; // Kottayam, Kerala
+
+    // --- Model Forecast Logic (from model_forecast.py) ---
+
+    /**
+     * Converts predicted PM2.5 (µg/m³) to a simplified AQI health level and color.
+     */
+    function pm25ToAqiLevel(pm25) {
+        if (pm25 <= 12.0) return { aqi: Math.round(pm25 * 4.16), level: "Good", color: '#22c55e' }; // Green
+        if (pm25 <= 35.4) return { aqi: Math.round(pm25 * 2.13), level: "Moderate", color: '#facc15' }; // Yellow
+        if (pm25 <= 55.4) return { aqi: Math.round(pm25 * 2.37), level: "Unhealthy for Sensitive Groups", color: '#fb923c' }; // Orange
+        if (pm25 <= 150.4) return { aqi: Math.round(pm25 * 1.55), level: "Unhealthy", color: '#f97316' }; // Strong Orange
+        if (pm25 <= 250.4) return { aqi: Math.round(pm25 * 1.1), level: "Very Unhealthy", color: '#ef4444' }; // Red
+        return { aqi: Math.round(pm25 * 0.9), level: "Hazardous", color: '#8b5cf6' }; // Purple (Using a custom purple for contrast)
+    }
+
+    /**
+     * Finds the color based on AQI value (used for the chart bars).
+     */
+    function getAqiColor(pm25) {
+        return pm25ToAqiLevel(pm25).color;
+    }
+
+
+    // --- Simulated API Data (Mimicking the structure from app_backend.py) ---
+    /**
+     * Simulates fetching data based on coordinates. 
+     * Mock data simplifies the forecast based on whether the location is near a major city.
+     */
+    function simulateFetchData(lat, lon, locationName) {
+        // Simple logic to return high pollution (Delhi) or moderate pollution (Kerala) mock data
+        const isDelhiArea = lat > 28 && lat < 29 && lon > 77 && lon < 78;
+        
+        const data = isDelhiArea ? {
+            locationName: locationName || 'New Delhi, India (TEMPO Forecast)',
+            coords: [lat, lon], 
+            predicted_pm25: 145.8, // Unhealthy
+            pollutant_details: {
+                'TEMPO NO2 (mol/m²)': '0.00015',
+                'Current Temp (°C)': '28.5',
+                'Wind Speed (m/s)': '3.2',
+                'Predicted PM2.5 (µg/m³)': '145.8',
+            },
+            weeklyForecast: [
+                { day: 'Today', pm25: 145.8 }, { day: 'Day+1', pm25: 120 }, { day: 'Day+2', pm25: 95 }, 
+                { day: 'Day+3', pm25: 80 }, { day: 'Day+4', pm25: 75 }, { day: 'Day+5', pm25: 90 }, 
+                { day: 'Day+6', pm25: 110 }
+            ],
+            advice: [
+                "Air quality is **Unhealthy**. Active children, adults, and people with respiratory disease should avoid prolonged outdoor exertion.",
+                "Minimize time spent in highly polluted areas (traffic, industry).",
+                "Ensure indoor air filtration is running and windows are sealed, especially when PM$_{2.5}$ exceeds $70 \mu g/m^3$."
+            ],
+            validation: [
+                { date: 'Oct 3', satellite_no2: '0.00008', ground_pm25: '155', distance_km: '1.2' },
+                { date: 'Oct 2', satellite_no2: '0.00006', ground_pm25: '160', distance_km: '0.9' },
+                { date: 'Oct 1', satellite_no2: '0.00005', ground_pm25: '180', distance_km: '1.5' },
+            ]
+        } : { 
+            locationName: locationName || 'Selected Coordinates (TEMPO Forecast)',
+            coords: [lat, lon], 
+            predicted_pm25: 48.2, // Moderate (Assumed for South India/Kerala)
+            pollutant_details: {
+                'TEMPO NO2 (mol/m²)': '0.00001',
+                'Current Temp (°C)': '24.5',
+                'Wind Speed (m/s)': '5.8',
+                'Predicted PM2.5 (µg/m³)': '48.2',
+            },
+            weeklyForecast: [
+                { day: 'Today', pm25: 48.2 }, { day: 'Day+1', pm25: 55 }, { day: 'Day+2', pm25: 42 }, 
+                { day: 'Day+3', pm25: 38 }, { day: 'Day+4', pm25: 51 }, { day: 'Day+5', pm25: 60 }, 
+                { day: 'Day+6', pm25: 58 }
+            ],
+            advice: [
+                "Air quality is **Moderate**. Enjoy outdoor activities, but unusually sensitive people should consider limiting prolonged outdoor exertion.",
+                "This forecast is based on low TEMPO NO$_{2}$ and favorable wind conditions.",
+                "No major precautions are necessary for the general public at this level."
+            ],
+            validation: [
+                { date: 'Oct 3', satellite_no2: '0.000005', ground_pm25: '45', distance_km: '0.5' },
+                { date: 'Oct 2', satellite_no2: '0.000004', ground_pm25: '52', distance_km: '0.3' },
+                { date: 'Oct 1', satellite_no2: '0.000006', ground_pm25: '40', distance_km: '0.7' },
+            ]
+        };
+
+        const aqiData = pm25ToAqiLevel(data.predicted_pm25);
+
+        return {
+            ...data,
+            aqi: aqiData.aqi,
+            aqiStatus: aqiData.level,
+            aqiColor: aqiData.color
+        };
+    }
+    // --- End Simulated API Data ---
+
+    /**
+     * Initializes the Leaflet map and adds interactivity.
+     */
+    function initializeMap(latitude, longitude, locationName) {
+        const mapContainer = 'map-container';
+        const initialZoom = 10;
+        
+        // Map Initialization (only run once)
+        if (!map) {
+             map = L.map(mapContainer, { 
+                zoomControl: true, 
+                scrollWheelZoom: true 
+            }).setView([latitude, longitude], initialZoom);
+
+            // Using a light tile layer for the new light theme
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                maxZoom: 19
+            }).addTo(map);
+            
+            // MAP INTERACTIVITY: Add click listener to select location
+            map.on('click', function(e) {
+                const lat = e.latlng.lat;
+                const lon = e.latlng.lng;
+                
+                // For a real app, you would reverse geocode here.
+                const newLocationName = `Lat: ${lat.toFixed(4)}, Lon: ${lon.toFixed(4)}`;
+                loadForecastData(lat, lon, newLocationName);
+            });
+            
+        } else {
+            // If map already exists, just move the view
+            map.setView([latitude, longitude], initialZoom);
+        }
+
+        // Update Marker and Circle
+        if (marker) {
+            map.removeLayer(marker);
+        }
+        if (circle) {
+            map.removeLayer(circle);
+        }
+
+        marker = L.marker([latitude, longitude]).addTo(map)
+            .bindPopup(`<b>${locationName}</b><br>Forecast Location`).openPopup();
+            
+        circle = L.circle([latitude, longitude], {
+            color: '#3b82f6', 
+            fillColor: '#3b82f6',
+            fillOpacity: 0.2,
+            radius: 25000 
+        }).addTo(map);
+        
+        document.getElementById('location-search').value = locationName;
+
+        // Force map re-render (essential after visibility changes)
+        map.invalidateSize();
+    }
+
+
+    /**
+     * Updates the AQI meter needle and text display based on predicted PM2.5.
+     */
+    function updateAqiMeter(pm25, aqi, color) {
+        const needle = document.getElementById('aqi-meter-needle');
+        const aqiValueEl = document.getElementById('aqi-value');
+        const aqiStatusEl = document.getElementById('aqi-status');
+        
+        const maxPm25 = 200; 
+        let rotationDegrees = (pm25 / maxPm25) * 180;
+        
+        rotationDegrees = Math.min(180, Math.max(0, rotationDegrees));
+        
+        // FIX: The needle starts pointing left (180 degrees) from the center point, 
+        // so we subtract 90 degrees to make 0 PM2.5 align with the start of the arc.
+        const finalRotation = rotationDegrees - 90;
+
+        // Apply rotation
+        needle.style.transform = `rotate(${finalRotation}deg)`;
+        
+        // Update text and color
+        aqiValueEl.textContent = Math.round(pm25);
+        aqiStatusEl.textContent = pm25ToAqiLevel(pm25).level;
+        document.documentElement.style.setProperty('--aqi-color', color);
+        
+        // Ensure status text is dark for maximum contrast against arc colors
+        aqiStatusEl.style.color = '#1f2937'; 
+        
+        document.getElementById('aqi-time').textContent = new Date().toLocaleTimeString();
+    }
+    
+    /**
+     * NEW: Updates the AQI Bar Indicator based on the predicted PM2.5.
+     */
+    function updateAqiBar(pm25) {
+        const marker = document.getElementById("marker");
+        const pm10El = document.getElementById("pm10");
+        const pm25El = document.getElementById("pm25_bar");
+        const aqiBar = document.getElementById("aqiBar");
+
+        // Use the converted AQI value, max 500 for the scale
+        const aqiValue = pm25ToAqiLevel(pm25).aqi; 
+        let boundedAqi = Math.max(0, Math.min(500, aqiValue));
+        
+        if (!aqiBar) return; 
+
+        // Calculate marker position relative to the bar width
+        const barWidth = aqiBar.offsetWidth;
+        const position = (boundedAqi / 500) * barWidth;
+
+        // Center the 10px wide marker (-5px)
+        marker.style.left = `${position - 5}px`;
+
+        // Update PM values (PM10 is typically 1.5 to 2 times higher than PM2.5)
+        pm25El.innerText = `PM2.5 : ${pm25.toFixed(1)} µg/m³`;
+        pm10El.innerText = `PM10 : ${(pm25 * 1.6).toFixed(1)} µg/m³`;
+    }
+
+
+    /**
+     * Updates the Model Features/Forecast details box.
+     */
+    function updateForecastDetails(details) {
+        const container = document.getElementById('forecast-details');
+        container.innerHTML = '';
+        
+        for (const [key, value] of Object.entries(details)) {
+            const isPrediction = key.includes('Predicted');
+            
+            const item = document.createElement('div');
+            // Changed card colors for light mode: White BG, subtle border
+            item.className = `p-3 rounded-lg flex flex-col transition-all duration-300 ${isPrediction ? 'bg-primary-blue shadow-lg scale-105 text-white' : 'bg-gray-50 border border-gray-200 text-gray-900'}`;
+            item.innerHTML = `
+                <span class="text-xs font-medium ${isPrediction ? 'text-white/80' : 'text-gray-500'}">${key}</span>
+                <span class="text-lg font-bold ${isPrediction ? 'text-white' : 'text-gray-900'}">${value}</span>
+            `;
+            container.appendChild(item);
+        }
+    }
+
+    /**
+     * Updates the Model Validation box.
+     */
+    function updateValidationDetails(validationData) {
+        const container = document.getElementById('validation-details');
+        container.innerHTML = '';
+        
+        validationData.forEach((data, index) => {
+            const agreementClass = 'text-gray-700'; 
+
+            const item = document.createElement('div');
+            // Changed card colors for light mode
+            item.className = 'p-3 border border-gray-300 rounded-lg bg-gray-50 shadow-sm';
+            item.innerHTML = `
+                <div class="flex justify-between items-center text-gray-700 mb-1">
+                    <span class="font-bold text-sm">${data.date} Check:</span>
+                    <span class="text-xs ${agreementClass} font-medium">${data.distance_km} km to Sensor</span>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-sm font-mono">
+                    <div class="bg-gray-200 p-2 rounded-md">
+                        <span class="text-xs text-yellow-700 block">TEMPO NO$_{2}$ (Input)</span>
+                        <span class="font-bold block">${data.satellite_no2}</span>
+                    </div>
+                    <div class="bg-gray-200 p-2 rounded-md">
+                        <span class="text-xs text-red-700 block">OpenAQ PM$_{2.5}$ (Truth)</span>
+                        <span class="font-bold block">${data.ground_pm25} $\mu g/m^3$</span>
+                    </div>
+                </div>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    /**
+     * Updates the Health Recommendations box.
+     */
+    function updateHealthAdvice(advice) {
+        const container = document.getElementById('health-advice');
+        container.innerHTML = '';
+        
+        advice.forEach(point => {
+            const item = document.createElement('li');
+            item.className = 'flex items-start';
+            item.innerHTML = `
+                <svg class="w-4 h-4 mr-2 mt-1 text-red-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v4a1 1 0 102 0V7zm-1 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"></path></svg>
+                <span>${point}</span>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    /**
+     * Updates the 7-Day PM2.5 Forecast Chart.
+     */
+    function updateForecastChart(weeklyData) {
+        const chartContainer = document.getElementById('aqi-chart-container');
+        const labelContainer = document.getElementById('chart-labels');
+        chartContainer.innerHTML = '';
+        labelContainer.innerHTML = '';
+
+        const maxPm25 = 200; 
+        const maxHeight = 256; // Fixed height in pixels (h-64)
+
+        weeklyData.forEach(data => {
+            // Calculate height in pixels, ensuring a minimum height for visibility
+            let heightPx = Math.max(10, (data.pm25 / maxPm25) * maxHeight);
+            heightPx = Math.min(maxHeight, heightPx);
+            
+            const color = getAqiColor(data.pm25);
+
+            // Create Bar
+            const bar = document.createElement('div');
+            bar.className = 'chart-bar w-1/8 flex-grow mx-1 flex flex-col justify-end items-center';
+            bar.style.width = '12%'; 
+            bar.innerHTML = `
+                <div class="w-full relative group cursor-pointer shadow-lg" 
+                     style="height: ${heightPx}px; background-color: ${color};">
+                    <span class="absolute -top-6 text-xs font-bold text-gray-900 opacity-0 group-hover:opacity-100 transition duration-150 bg-gray-200 px-1 py-0.5 rounded">${Math.round(data.pm25)}</span>
+                </div>
+            `;
+            chartContainer.appendChild(bar);
+
+            // Create Label
+            const label = document.createElement('span');
+            label.className = 'w-1/8 text-center text-gray-600';
+            label.style.width = '12%';
+            label.textContent = data.day;
+            labelContainer.appendChild(label);
+        });
+    }
+
+    /**
+     * Master function to load and display all forecast and validation data.
+     */
+    function loadForecastData(lat, lon, locationName) {
+        const data = simulateFetchData(lat, lon, locationName);
+        
+        // Initialize or update the map
+        initializeMap(data.coords[0], data.coords[1], data.locationName);
+
+        // Update all components
+        updateAqiMeter(data.predicted_pm25, data.aqi, data.aqiColor);
+        updateAqiBar(data.predicted_pm25); // NEW: Update the horizontal bar
+        updateForecastDetails(data.pollutant_details); 
+        updateValidationDetails(data.validation);
+        updateHealthAdvice(data.advice);
+        updateForecastChart(data.weeklyForecast);
+    }
+    
+    /**
+     * Handles the search/forecast button click (uses the text input).
+     * **FIXED**: Removed hardcoded San Francisco fallback.
+     */
+    function searchLocation() {
+        const location = document.getElementById('location-search').value;
+        
+        let lat = DEFAULT_COORDS[0];
+        let lon = DEFAULT_COORDS[1];
+        let locationName = location || 'Selected Location';
+
+        // Simulation logic: Use the specific coordinates if they are for Delhi (high pollution scenario)
+        if (location.toLowerCase().includes('delhi')) {
+            lat = 28.7041;
+            lon = 77.1025;
+            locationName = 'New Delhi, India';
+        } 
+        // For all other searches, it defaults to the DEFAULT_COORDS (Kottayam) and uses the search term as the location name.
+        
+        loadForecastData(lat, lon, locationName);
+    }
+    
+    /**
+     * NEW: Gets the user's current location via browser Geolocation.
+     */
+    function getCurrentLocationAndForecast() {
+        const button = document.querySelector('button[onclick="getCurrentLocationAndForecast()"]');
+        button.disabled = true;
+        button.textContent = 'Locating...';
+
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    
+                    button.disabled = false;
+                    button.innerHTML = '<svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>Current Location';
+
+                    // Simulate fetching data for the detected coordinates
+                    loadForecastData(lat, lon, 'Your Current Location');
+                },
+                (error) => {
+                    console.error("Geolocation failed:", error);
+                    button.disabled = false;
+                    button.innerHTML = '<svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>Current Location';
+
+                    // Fallback to default location
+                    loadForecastData(DEFAULT_COORDS[0], DEFAULT_COORDS[1], 'Geolocation Failed. Showing Default Location.');
+                }
+            );
+        } else {
+            console.error("Geolocation not supported by this browser.");
+            button.disabled = false;
+            button.innerHTML = '<svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>Current Location';
+            loadForecastData(DEFAULT_COORDS[0], DEFAULT_COORDS[1], 'Browser Unsupported. Showing Default Location.');
+        }
+    }
+
+
+    /**
+     * Handles the pollution alert setting.
+     */
+    function sendAlert() {
+        const threshold = parseInt(document.getElementById('alert-threshold').value);
+        const alertMessage = document.getElementById('alert-message');
+        const currentPm25 = parseFloat(document.getElementById('aqi-value').textContent);
+
+        if (isNaN(threshold) || threshold <= 0) {
+            alertMessage.textContent = 'Please set a valid PM2.5 threshold.';
+            alertMessage.className = 'mt-3 text-sm text-red-600';
+            alertMessage.classList.remove('hidden');
+            return;
+        }
+        
+        // Show success message and check current status
+        alertMessage.textContent = `Alert set! You will be notified if the PM2.5 forecast exceeds ${threshold} µg/m³.`;
+        alertMessage.className = 'mt-3 text-sm text-green-700';
+        alertMessage.classList.remove('hidden');
+
+        if (currentPm25 >= threshold) {
+             alertMessage.textContent += ` (Current forecast ${currentPm25} is ABOVE your threshold!)`;
+             alertMessage.className = 'mt-3 text-sm text-red-600';
+        }
+
+        setTimeout(() => {
+            alertMessage.classList.add('hidden');
+        }, 5000);
+    }
+
+    /**
+     * Initialization function to manage the splash screen fade-out.
+     */
+    function initializeApp() {
+        const splashScreen = document.getElementById('splash-screen');
+        const mainApp = document.getElementById('main-app');
+
+        // Initial loading of data (using Kerala context as default)
+        loadForecastData(DEFAULT_COORDS[0], DEFAULT_COORDS[1], document.getElementById('location-search').value);
+
+        // 1. Start fade-out after a brief pause
+        setTimeout(() => {
+            splashScreen.style.opacity = '0';
+        }, 1000); 
+
+        // 2. Hide splash screen and show main app after transition completes
+        setTimeout(() => {
+            splashScreen.classList.add('hidden');
+            mainApp.classList.remove('hidden');
+            // FIX: Ensure map tiles load correctly after the container becomes visible
+            if (map) {
+                map.invalidateSize();
+            }
+        }, 2000); 
+    }
+
+    // Start the application when the DOM is fully loaded
+    window.onload = initializeApp;
+
+</script>
+
+</body>
+</html>
